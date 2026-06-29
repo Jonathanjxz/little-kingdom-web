@@ -43,7 +43,11 @@ export function emitGameViews(
   for (const member of room.members) {
     try {
       const view = roomService.getPlayerView(room.roomId, member.playerId);
-      io.to(`${room.roomId}:${member.playerId}`).emit("game:view", { view });
+      const timer = roomService.getTimerView(room.roomId);
+      io.to(`${room.roomId}:${member.playerId}`).emit("game:view", {
+        view,
+        timer,
+      });
     } catch {
       // 如果某个玩家获取视角失败（理论上不应发生），跳过
     }

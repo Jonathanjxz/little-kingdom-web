@@ -158,6 +158,16 @@ export type GameEvent =
       playerId: PlayerId;
     })
   | (GameEventBase & {
+      type: "TURN_TIMED_OUT";
+      playerId: PlayerId;
+      phase: Exclude<GamePhase, "finished">;
+    })
+  | (GameEventBase & {
+      type: "AUTO_ACTION_APPLIED";
+      playerId: PlayerId;
+      actionType: GameAction["type"];
+    })
+  | (GameEventBase & {
       type: "GAME_FINISHED";
       result: FinalResult;
     });

@@ -41,6 +41,7 @@ export function createSocketServer() {
 
   const roomService: RoomService = new RoomServiceImpl();
   registerSocketHandlers(io, roomService);
+  httpServer.on("close", () => roomService.dispose());
 
   // Health check endpoint (always available)
   httpServer.on("request", (req, res) => {

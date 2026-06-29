@@ -66,6 +66,35 @@ describe("创建房间", () => {
     const pubMember = pub.members[0]!;
     expect("sessionToken" in pubMember).toBe(false);
   });
+
+  it("默认使用 standard 限时模式", () => {
+    const { room } = svc.createRoom({ nickname: "Alice" });
+    expect(room.timeControl).toEqual({
+      mode: "standard",
+      baseSeconds: 20,
+      extraSeconds: 50,
+    });
+  });
+
+  it("可以创建无限时房间", () => {
+    const { room } = svc.createRoom({
+      nickname: "Alice",
+      timeControlMode: "none",
+    });
+    expect(room.timeControl).toEqual({ mode: "none" });
+  });
+
+  it("可以创建宽松限时房间", () => {
+    const { room } = svc.createRoom({
+      nickname: "Alice",
+      timeControlMode: "relaxed",
+    });
+    expect(room.timeControl).toEqual({
+      mode: "relaxed",
+      baseSeconds: 30,
+      extraSeconds: 80,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

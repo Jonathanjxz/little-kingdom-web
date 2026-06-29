@@ -14,6 +14,7 @@ import type {
   JoinRoomPayload,
   ReconnectPayload,
   RoomPayload,
+  GameViewPayload,
 } from "../../src/server/socket/protocol";
 import type { PlayerGameView } from "../../src/game/view";
 import { createSocketServer } from "../../src/server/server";
@@ -104,6 +105,25 @@ describe("房间 create/join", () => {
     const data = await createRoomAndGet(c);
     const m = data.room.members[0]!;
     expect("sessionToken" in m).toBe(false);
+    c.disconnect();
+  });
+
+  it("room:create 和 room:updated 返回 timeControl", async () => {
+    const c = newClient();
+    const updated = waitForEvent<RoomPayload>(c, "room:updated");
+    const ack = await new Promise<SocketAck<CreateRoomPayload>>((resolve) => {
+      c.emit("room:create", {
+        nickname: "Alice",
+        timeControlMode: "relaxed",
+      }, resolve);
+    });
+
+    expect(ack.data!.room.timeControl).toEqual({
+      mode: "relaxed",
+      baseSeconds: 30,
+      extraSeconds: 80,
+    });
+    expect((await updated).room.timeControl.mode).toBe("relaxed");
     c.disconnect();
   });
 
@@ -198,6 +218,10 @@ describe("room:reconnect", () => {
     expect(ack.ok).toBe(true);
     expect(ack.data!.view).toBeDefined();
     expect(ack.data!.view!.self.hand).toHaveLength(8);
+    expect(ack.data!.timer?.mode).toBe("standard");
+    expect(ack.data!.timer?.deadlineAt).toBeGreaterThan(
+      ack.data!.timer!.serverNow,
+    );
     c1.disconnect();
     c2b.disconnect();
   });
@@ -233,8 +257,8 @@ describe("game:action", () => {
     const d1 = await createRoomAndGet(c1);
     const c2 = newClient();
     const d2 = await joinRoomAndGet(c2, d1.room.roomId);
-    const v1p = waitForEvent<{ view: PlayerGameView }>(c1, "game:view");
-    const v2p = waitForEvent<{ view: PlayerGameView }>(c2, "game:view");
+    const v1p = waitForEvent<GameViewPayload>(c1, "game:view");
+    const v2p = waitForEvent<GameViewPayload>(c2, "game:view");
     c1.emit("game:start", {}, () => {});
     const v1 = await v1p;
     const v2 = await v2p;
@@ -244,6 +268,15 @@ describe("game:action", () => {
     const cpView = cpSock === c1 ? v1 : v2;
     return { roomId: d1.room.roomId, c1, c2, d1, d2, cpId, cpSock, otherSock, cpView };
   }
+
+  it("game:view 返回服务端 timer", async () => {
+    const { cpView, c1, c2 } = await setup2P();
+    expect(cpView.timer.mode).toBe("standard");
+    expect(cpView.timer.phase).toBe("play");
+    expect(cpView.timer.deadlineAt).toBeGreaterThan(cpView.timer.serverNow);
+    c1.disconnect();
+    c2.disconnect();
+  });
 
   it("当前玩家可以发送 game:action（不传 roomId/playerId）", async () => {
     const { cpId, cpSock, cpView, c1, c2 } = await setup2P();

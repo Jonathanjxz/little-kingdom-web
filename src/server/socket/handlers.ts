@@ -71,6 +71,13 @@ export function registerSocketHandlers(
   io: AppServer,
   roomService: RoomService,
 ): void {
+  roomService.setRoomUpdateListener((room) => {
+    emitGameViews(io, roomService, room);
+    if (room.status === "finished") {
+      emitRoomUpdated(io, room);
+    }
+  });
+
   io.on("connection", (socket) => {
     // ---------------------------------------------------------------
     // room:create
@@ -79,6 +86,7 @@ export function registerSocketHandlers(
       try {
         const { room, playerId, sessionToken } = roomService.createRoom({
           nickname: input.nickname,
+          timeControlMode: input.timeControlMode,
         });
         socket.data = { roomId: room.roomId, playerId, sessionToken };
         joinSocketRooms(socket, room.roomId, playerId);
@@ -148,9 +156,11 @@ export function registerSocketHandlers(
         joinSocketRooms(socket, input.roomId, input.playerId);
 
         let view = undefined;
+        let timer = undefined;
         if (room.gameState) {
           try {
             view = roomService.getPlayerView(input.roomId, input.playerId);
+            timer = roomService.getTimerView(input.roomId);
           } catch { /* optional */ }
         }
 
@@ -159,6 +169,7 @@ export function registerSocketHandlers(
           playerId: input.playerId,
           sessionToken: input.sessionToken,
           view,
+          timer,
         }, ack);
         emitRoomUpdated(io, room);
         emitGameViews(io, roomService, room);
@@ -195,9 +206,10 @@ export function registerSocketHandlers(
         } as typeof input.action;
 
         const view = roomService.applyGameActionToRoom(roomId, playerId, safeAction);
+        const timer = roomService.getTimerView(roomId);
         const room = roomService.getRoom(roomId)!;
 
-        successAck({ view }, ack);
+        successAck({ view, timer }, ack);
         emitGameViews(io, roomService, room);
         if (room.status === "finished") {
           emitRoomUpdated(io, room);

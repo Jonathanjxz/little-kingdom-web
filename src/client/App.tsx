@@ -1,14 +1,25 @@
 /// <reference types="vite/client" />
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { socket, getConnectionState } from "./socket";
 import type { SocketConnectionState } from "./socket";
-import type { PublicRoomView } from "../server/socket/protocol";
+import type {
+  GameViewPayload,
+  PublicRoomView,
+} from "../server/socket/protocol";
+import type { TimeControlMode } from "../server/timer/time-control";
+import type { PublicTimerView } from "../server/rooms/room-types";
 import type { PlayerGameView } from "../game/view";
 import type { Card, CardColor, GameAction, MultiplierCard, NumberCard, PlayerId, RoomId } from "../game/types";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? "http://localhost:3001";
 const STORAGE_KEY = "kg-session";
+
+const TIME_CONTROL_LABELS: Record<TimeControlMode, string> = {
+  none: "无限时",
+  standard: "标准：20s + 50s",
+  relaxed: "宽松：30s + 80s",
+};
 
 // ---------------------------------------------------------------------------
 // Color mapping
@@ -72,6 +83,11 @@ interface SavedSession {
   sessionToken: string;
 }
 
+interface TimerSnapshot {
+  timer: PublicTimerView;
+  receivedAt: number;
+}
+
 function saveSession(s: SavedSession): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
 }
@@ -96,23 +112,30 @@ function clearSession(): void {
 
 export function App() {
   const [nickname, setNickname] = useState("");
+  const [timeControlMode, setTimeControlMode] =
+    useState<TimeControlMode>("standard");
   const [roomIdInput, setRoomIdInput] = useState("");
   const [roomId, setRoomId] = useState<RoomId | undefined>();
   const [playerId, setPlayerId] = useState<PlayerId | undefined>();
-  const [sessionToken, setSessionToken] = useState<string | undefined>();
   const [room, setRoom] = useState<PublicRoomView | undefined>();
   const [view, setView] = useState<PlayerGameView | undefined>();
+  const [timerSnapshot, setTimerSnapshot] = useState<TimerSnapshot>();
+  const [clientNow, setClientNow] = useState(() => Date.now());
   const [selectedCardId, setSelectedCardId] = useState<Card["id"] | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [connState, setConnState] = useState<SocketConnectionState>({
     status: "disconnected",
     reason: "正在连接...",
   });
+  const reconnectingSocketId = useRef<string | undefined>(undefined);
 
   // Socket listeners
   useEffect(() => {
     const onRoomUpdated = (p: { room: PublicRoomView }) => setRoom(p.room);
-    const onGameView = (p: { view: PlayerGameView }) => setView(p.view);
+    const onGameView = (payload: GameViewPayload) => {
+      setView(payload.view);
+      setTimerSnapshot({ timer: payload.timer, receivedAt: Date.now() });
+    };
 
     socket.on("room:updated", onRoomUpdated);
     socket.on("game:view", onGameView);
@@ -126,38 +149,64 @@ export function App() {
     };
   }, []);
 
-  // Auto-reconnect when socket connects
+  // Restore the saved session after every fresh Socket.IO connection.
   useEffect(() => {
-    if (connState.status !== "connected") return;
-    if (sessionToken) return; // already reconnected
+    const restoreSavedSession = () => {
+      const socketId = socket.id;
+      if (!socketId || reconnectingSocketId.current === socketId) return;
 
-    const saved = loadSession();
-    if (!saved || !saved.roomId || !saved.playerId || !saved.sessionToken) return;
+      const saved = loadSession();
+      if (!saved?.roomId || !saved.playerId || !saved.sessionToken) return;
 
-    socket.emit(
-      "room:reconnect",
-      {
-        roomId: saved.roomId,
-        playerId: saved.playerId,
-        sessionToken: saved.sessionToken,
-      },
-      (ack) => {
+      reconnectingSocketId.current = socketId;
+      socket.emit("room:reconnect", saved, (ack) => {
         if (!ack.ok) {
-          setError(`自动重连失败: ${ack.error?.code}`);
-          clearSession();
+          if (ack.error?.code === "INVALID_SESSION") {
+            setError(`会话已失效，请重新加入房间`);
+            clearSession();
+            setRoomId(undefined);
+            setPlayerId(undefined);
+            setRoom(undefined);
+            setView(undefined);
+            setTimerSnapshot(undefined);
+          } else {
+            setError(
+              `自动重连失败 (${ack.error?.code ?? "UNKNOWN_ERROR"})，等待下一次自动重连...`,
+            );
+            // 保留 localStorage 和当前 UI 状态，让 Socket.IO 后续 reconnect 继续尝试
+          }
           return;
         }
+
         setError(undefined);
         setRoomId(saved.roomId);
         setPlayerId(saved.playerId);
-        setSessionToken(saved.sessionToken);
         if (ack.data) {
           setRoom(ack.data.room);
-          if (ack.data.view) setView(ack.data.view);
+          setView(ack.data.view);
+          if (ack.data.timer) {
+            setTimerSnapshot({
+              timer: ack.data.timer,
+              receivedAt: Date.now(),
+            });
+          }
         }
-      },
-    );
-  }, [connState]);
+      });
+    };
+
+    socket.on("connect", restoreSavedSession);
+    if (socket.connected) restoreSavedSession();
+
+    return () => {
+      socket.off("connect", restoreSavedSession);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!timerSnapshot?.timer.deadlineAt) return;
+    const interval = window.setInterval(() => setClientNow(Date.now()), 250);
+    return () => window.clearInterval(interval);
+  }, [timerSnapshot]);
 
   // -----------------------------------------------------------------------
   // Actions
@@ -165,7 +214,7 @@ export function App() {
 
   const createRoom = useCallback(() => {
     if (!nickname) return;
-    socket.emit("room:create", { nickname }, (ack) => {
+    socket.emit("room:create", { nickname, timeControlMode }, (ack) => {
       if (!ack.ok) {
         setError(`${ack.error?.code}: ${ack.error?.message}`);
         return;
@@ -174,7 +223,6 @@ export function App() {
       const data = ack.data!;
       setRoomId(data.room.roomId);
       setPlayerId(data.playerId);
-      setSessionToken(data.sessionToken);
       setRoom(data.room);
       saveSession({
         roomId: data.room.roomId,
@@ -182,7 +230,7 @@ export function App() {
         sessionToken: data.sessionToken,
       });
     });
-  }, [nickname]);
+  }, [nickname, timeControlMode]);
 
   const joinRoom = useCallback(() => {
     if (!nickname || !roomIdInput) return;
@@ -195,7 +243,6 @@ export function App() {
       const data = ack.data!;
       setRoomId(data.room.roomId);
       setPlayerId(data.playerId);
-      setSessionToken(data.sessionToken);
       setRoom(data.room);
       saveSession({
         roomId: data.room.roomId,
@@ -215,9 +262,9 @@ export function App() {
       clearSession();
       setRoomId(undefined);
       setPlayerId(undefined);
-      setSessionToken(undefined);
       setRoom(undefined);
       setView(undefined);
+      setTimerSnapshot(undefined);
     });
   }, []);
 
@@ -284,6 +331,31 @@ export function App() {
 
   const isHost = room && playerId ? room.hostPlayerId === playerId : false;
   const isMyTurn = view ? view.currentPlayerId === playerId : false;
+  const timer = timerSnapshot?.timer;
+  const estimatedServerNow = timerSnapshot
+    ? timerSnapshot.timer.serverNow + (clientNow - timerSnapshot.receivedAt)
+    : undefined;
+  const operationRemainingSeconds =
+    timer?.deadlineAt !== undefined && estimatedServerNow !== undefined
+      ? Math.max(0, Math.ceil((timer.deadlineAt - estimatedServerNow) / 1000))
+      : undefined;
+  const extraUsedSeconds =
+    timer?.startedAt !== undefined &&
+    timer.baseSeconds !== undefined &&
+    estimatedServerNow !== undefined
+      ? Math.max(
+          0,
+          Math.ceil(
+            (estimatedServerNow -
+              (timer.startedAt + timer.baseSeconds * 1000)) /
+              1000,
+          ),
+        )
+      : 0;
+  const displayedExtraSeconds =
+    timer?.extraRemainingSeconds !== undefined
+      ? Math.max(0, timer.extraRemainingSeconds - extraUsedSeconds)
+      : undefined;
 
   // -----------------------------------------------------------------------
   // Render
@@ -294,9 +366,14 @@ export function App() {
       <h1>Kingdom Card Game</h1>
 
       <div data-testid="socket-status">
-        {connState.status === "connected"
-          ? `已连接 (${connState.id ?? ""})`
-          : `未连接 — ${"reason" in connState ? connState.reason : connState.status}`}
+        {connState.status === "connected" && `connected / 已连接 (${connState.id ?? ""})`}
+        {connState.status === "connecting" && "connecting"}
+        {connState.status === "disconnected" &&
+          `disconnected${connState.reason ? ` — ${connState.reason}` : ""}`}
+        {connState.status === "reconnecting" &&
+          `reconnecting (${connState.attempt})`}
+        {connState.status === "reconnect_failed" &&
+          `reconnect failed — ${connState.message}`}
       </div>
       <div style={{ fontSize: "0.75rem", opacity: 0.5 }}>Server: {SERVER_URL}</div>
 
@@ -321,6 +398,20 @@ export function App() {
           </label>
         </div>
         <div className="row">
+          <label>
+            限时规则：
+            <select
+              data-testid="time-control-select"
+              value={timeControlMode}
+              onChange={(event) =>
+                setTimeControlMode(event.target.value as TimeControlMode)
+              }
+            >
+              <option value="none">无限时</option>
+              <option value="standard">标准：20s + 50s</option>
+              <option value="relaxed">宽松：30s + 80s</option>
+            </select>
+          </label>
           <button data-testid="create-room-button" onClick={createRoom} disabled={!nickname}>
             创建房间
           </button>
@@ -353,6 +444,9 @@ export function App() {
         <section className="card">
           <h2>房间</h2>
           <p>状态: {room.status}</p>
+          <p data-testid="room-time-control">
+            限时模式：{TIME_CONTROL_LABELS[room.timeControl.mode]}
+          </p>
           <ul data-testid="member-list">
             {room.members.map((m) => (
               <li
@@ -392,6 +486,21 @@ export function App() {
           <p>
             牌堆剩余: <span data-testid="deck-count">{view.deckCount}</span>
           </p>
+          {timer && (
+            <div data-testid="game-timer" data-phase={timer.phase}>
+              <div>限时模式：{TIME_CONTROL_LABELS[timer.mode]}</div>
+              {timer.mode !== "none" && (
+                <>
+                  <div data-testid="operation-remaining">
+                    当前操作剩余：{operationRemainingSeconds ?? 0}s
+                  </div>
+                  <div data-testid="extra-time-remaining">
+                    当前玩家额外时间：{displayedExtraSeconds ?? 0}s
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           {/* 其他玩家 */}
           <h3>其他玩家</h3>
@@ -518,6 +627,12 @@ export function App() {
                     : ""}
                   {e.type === "TURN_COMPLETED" && e.playerId
                     ? ` ${e.playerId} 回合结束`
+                    : ""}
+                  {e.type === "TURN_TIMED_OUT" && e.playerId
+                    ? ` ${e.playerId} 操作超时`
+                    : ""}
+                  {e.type === "AUTO_ACTION_APPLIED" && e.playerId
+                    ? ` ${e.playerId} 自动执行 ${e.actionType}`
                     : ""}
                   {e.type === "GAME_FINISHED" ? " 游戏结束" : ""}
                   {e.type === "PLAY_PHASE_SKIPPED" && e.playerId
