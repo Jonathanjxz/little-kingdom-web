@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: kingdom-card-game
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: 20.19.0
+      - key: NODE_ENV
+        value: production
