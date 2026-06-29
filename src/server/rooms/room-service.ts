@@ -14,12 +14,27 @@
 
 import { randomUUID } from "node:crypto";
 import { applyGameAction } from "../../game/actions";
+import { canPlaceCard } from "../../game/column";
+import { CARD_COLORS } from "../../game/constants";
 import { createInitialGameState } from "../../game/state";
 import { createPlayerGameView } from "../../game/view";
 import type { PlayerGameView } from "../../game/view";
-import type { GameAction, PlayerId, RoomId } from "../../game/types";
-import type { Room, RoomMember } from "./room-types";
+import type {
+  GameAction,
+  GameEvent,
+  PlayerId,
+  RoomId,
+} from "../../game/types";
+import type { PublicTimerView, Room, RoomMember } from "./room-types";
 import { InMemoryRoomRepository } from "./room-repository";
+import {
+  createTimeControlConfig,
+  type TimeControlMode,
+} from "../timer/time-control";
+import {
+  TurnTimer,
+  type TurnTimerDependencies,
+} from "../timer/turn-timer";
 
 // ---------------------------------------------------------------------------
 // RoomError
@@ -52,6 +67,7 @@ export class RoomError extends Error {
 
 export interface CreateRoomInput {
   nickname: string;
+  timeControlMode?: TimeControlMode;
   now?: number;
 }
 
@@ -79,6 +95,10 @@ export interface ReconnectInput {
   sessionToken: string;
 }
 
+export interface RoomServiceOptions extends TurnTimerDependencies {
+  now?: () => number;
+}
+
 // ---------------------------------------------------------------------------
 // RoomService
 // ---------------------------------------------------------------------------
@@ -87,9 +107,26 @@ export class RoomService {
   private nextRoomSeq = 1;
   private nextPlayerSeq = 1;
   private readonly repository: InMemoryRoomRepository;
+  private readonly clock: () => number;
+  private readonly turnTimer: TurnTimer;
+  private roomUpdateListener?: (room: Room) => void;
 
-  constructor(repository?: InMemoryRoomRepository) {
+  constructor(
+    repository?: InMemoryRoomRepository,
+    options: RoomServiceOptions = {},
+  ) {
     this.repository = repository ?? new InMemoryRoomRepository();
+    this.clock = options.now ?? Date.now;
+    this.turnTimer = new TurnTimer(options);
+  }
+
+  setRoomUpdateListener(listener: (room: Room) => void): void {
+    this.roomUpdateListener = listener;
+  }
+
+  dispose(): void {
+    this.turnTimer.clearAll();
+    this.roomUpdateListener = undefined;
   }
 
   /** 生成房间 ID */
@@ -163,6 +200,8 @@ export class RoomService {
       status: "waiting",
       hostPlayerId: playerId,
       members: [member],
+      timeControl: createTimeControlConfig(input.timeControlMode),
+      timerState: undefined,
       gameState: undefined,
       createdAt: ts,
       updatedAt: ts,
@@ -226,6 +265,7 @@ export class RoomService {
 
       // 如果房间没人了，删除房间
       if (room.members.length === 0) {
+        this.turnTimer.clear(roomId);
         this.repository.delete(roomId);
         return room;
       }
@@ -312,10 +352,15 @@ export class RoomService {
       room.roomId,
       room.members.map((m) => ({ id: m.playerId, nickname: m.nickname })),
     );
+    const initialExtraSeconds = room.timeControl.extraSeconds ?? 0;
+    for (const player of gameState.players) {
+      player.extraTimeRemainingSeconds = initialExtraSeconds;
+    }
 
     room.status = "playing";
     room.gameState = gameState;
     room.updatedAt = 0;
+    this.startTimerForCurrentOperation(room);
     this.repository.set(room);
     return room;
   }
@@ -337,11 +382,28 @@ export class RoomService {
       throw new RoomError("PLAYER_ID_MISMATCH");
     }
 
-    const result = applyGameAction(room.gameState, action);
+    const now = this.clock();
+    const extraSecondsSpent = this.calculateElapsedExtraTime(room, now);
+    const result = applyGameAction(room.gameState, action, {
+      now,
+    });
+    const actingPlayer = result.state.players.find(
+      (candidate) => candidate.id === playerId,
+    );
+    if (actingPlayer) {
+      actingPlayer.extraTimeRemainingSeconds = Math.max(
+        0,
+        actingPlayer.extraTimeRemainingSeconds - extraSecondsSpent,
+      );
+    }
     room.gameState = result.state;
 
     if (result.state.status === "finished") {
       room.status = "finished";
+      room.timerState = undefined;
+      this.turnTimer.clear(roomId);
+    } else {
+      this.startTimerForCurrentOperation(room);
     }
 
     room.updatedAt = 0;
@@ -365,12 +427,197 @@ export class RoomService {
     return createPlayerGameView(room.gameState, playerId);
   }
 
+  getTimerView(roomId: RoomId): PublicTimerView {
+    const room = this.repository.get(roomId);
+    if (!room) throw new RoomError("ROOM_NOT_FOUND");
+
+    const timer = room.timerState;
+    const player = timer && room.gameState
+      ? room.gameState.players.find((candidate) => candidate.id === timer.playerId)
+      : undefined;
+
+    return {
+      mode: room.timeControl.mode,
+      playerId: timer?.playerId,
+      phase: timer?.phase,
+      startedAt: timer?.startedAt,
+      deadlineAt: timer?.deadlineAt,
+      serverNow: this.clock(),
+      baseSeconds: room.timeControl.baseSeconds,
+      extraRemainingSeconds: player?.extraTimeRemainingSeconds,
+    };
+  }
+
+  private startTimerForCurrentOperation(room: Room): void {
+    this.turnTimer.clear(room.roomId);
+    room.timerState = undefined;
+
+    if (
+      room.timeControl.mode === "none" ||
+      !room.gameState ||
+      room.gameState.status === "finished" ||
+      !room.gameState.currentPlayerId
+    ) {
+      return;
+    }
+
+    const player = room.gameState.players.find(
+      (candidate) => candidate.id === room.gameState!.currentPlayerId,
+    );
+    if (!player) return;
+
+    const startedAt = this.clock();
+    const totalSeconds =
+      (room.timeControl.baseSeconds ?? 0) +
+      player.extraTimeRemainingSeconds;
+    const deadlineAt = startedAt + totalSeconds * 1000;
+
+    room.timerState = {
+      playerId: player.id,
+      phase: room.gameState.phase,
+      startedAt,
+      deadlineAt,
+    };
+
+    this.turnTimer.start(room.roomId, deadlineAt - startedAt, () => {
+      this.handleTimerExpired(room.roomId, deadlineAt);
+    });
+  }
+
+  private calculateElapsedExtraTime(room: Room, now: number): number {
+    const timer = room.timerState;
+    const gameState = room.gameState;
+    const baseSeconds = room.timeControl.baseSeconds;
+    if (!timer || !gameState || baseSeconds === undefined) return 0;
+
+    const player = gameState.players.find(
+      (candidate) => candidate.id === timer.playerId,
+    );
+    if (!player) return 0;
+
+    const baseDeadline = timer.startedAt + baseSeconds * 1000;
+    const overtimeMs = Math.max(0, now - baseDeadline);
+    return Math.min(
+      player.extraTimeRemainingSeconds,
+      Math.ceil(overtimeMs / 1000),
+    );
+  }
+
+  private consumeElapsedExtraTime(room: Room, now: number): void {
+    const timer = room.timerState;
+    if (!timer || !room.gameState) return;
+    const player = room.gameState.players.find(
+      (candidate) => candidate.id === timer.playerId,
+    );
+    if (!player) return;
+    player.extraTimeRemainingSeconds -= this.calculateElapsedExtraTime(room, now);
+  }
+
+  private handleTimerExpired(roomId: RoomId, expectedDeadlineAt: number): void {
+    const room = this.repository.get(roomId);
+    if (
+      !room?.gameState ||
+      !room.timerState ||
+      room.timerState.deadlineAt !== expectedDeadlineAt ||
+      room.status !== "playing"
+    ) {
+      return;
+    }
+
+    const timer = room.timerState;
+    const now = Math.max(this.clock(), expectedDeadlineAt);
+    this.consumeElapsedExtraTime(room, now);
+
+    const action = this.createTimeoutAction(room);
+    const timeoutEvent: GameEvent = {
+      id: `event-${room.gameState.events.length + 1}`,
+      occurredAt: now,
+      type: "TURN_TIMED_OUT",
+      playerId: timer.playerId,
+      phase: timer.phase === "draw" ? "draw" : "play",
+    };
+    const autoActionEvent: GameEvent = {
+      id: `event-${room.gameState.events.length + 2}`,
+      occurredAt: now,
+      type: "AUTO_ACTION_APPLIED",
+      playerId: timer.playerId,
+      actionType: action.type,
+    };
+
+    room.gameState = {
+      ...room.gameState,
+      events: [
+        ...room.gameState.events,
+        timeoutEvent,
+        autoActionEvent,
+      ],
+    };
+
+    try {
+      const result = applyGameAction(room.gameState, action, { now });
+      room.gameState = result.state;
+      if (result.state.status === "finished") {
+        room.status = "finished";
+        room.timerState = undefined;
+        this.turnTimer.clear(roomId);
+      } else {
+        this.startTimerForCurrentOperation(room);
+      }
+    } catch {
+      // An empty deck in draw phase is an invalid state. Stop scheduling to
+      // avoid an asynchronous error loop while preserving diagnostics.
+      room.timerState = undefined;
+      this.turnTimer.clear(roomId);
+    }
+
+    room.updatedAt = now;
+    this.repository.set(room);
+    this.roomUpdateListener?.(room);
+  }
+
+  private createTimeoutAction(room: Room): GameAction {
+    const gameState = room.gameState!;
+    const playerId = gameState.currentPlayerId!;
+    if (gameState.phase === "draw") {
+      return { type: "DRAW_FROM_DECK", playerId };
+    }
+
+    const player = gameState.players.find(
+      (candidate) => candidate.id === playerId,
+    )!;
+    const discardable = player.hand.find((card) => card.type !== "wild");
+    if (discardable) {
+      return {
+        type: "DISCARD_CARD",
+        playerId,
+        cardId: discardable.id,
+      };
+    }
+
+    const wild = player.hand.find((card) => card.type === "wild");
+    if (wild) {
+      for (const color of CARD_COLORS) {
+        if (canPlaceCard(player.columns[color], wild)) {
+          return {
+            type: "PLACE_CARD",
+            playerId,
+            cardId: wild.id,
+            color,
+          };
+        }
+      }
+    }
+
+    return { type: "SKIP_PLAY_NO_LEGAL_ACTION", playerId };
+  }
+
   // -----------------------------------------------------------------------
   // 测试辅助
   // -----------------------------------------------------------------------
 
   /** 清空所有数据（仅测试用） */
   clear(): void {
+    this.dispose();
     this.repository.clear();
     this.nextRoomSeq = 1;
     this.nextPlayerSeq = 1;

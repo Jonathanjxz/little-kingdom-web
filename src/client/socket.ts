@@ -12,6 +12,15 @@ export const socket: AppSocket = (isProd
   ? io({ transports: ["websocket"], autoConnect: true })
   : io(devUrl, { transports: ["websocket"], autoConnect: true })) as unknown as AppSocket;
 
+if (import.meta.env.DEV) {
+  const testWindow = window as typeof window & {
+    __closeKingdomSocketTransport?: () => void;
+  };
+  testWindow.__closeKingdomSocketTransport = () => {
+    socket.io.engine?.close();
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Connection-state helper for React
 // ---------------------------------------------------------------------------
@@ -19,31 +28,41 @@ export const socket: AppSocket = (isProd
 export type SocketConnectionState =
   | { status: "connecting" | "connected"; id?: string }
   | { status: "disconnected"; reason?: string }
-  | { status: "error"; message: string };
+  | { status: "reconnecting"; attempt: number }
+  | { status: "reconnect_failed"; message: string };
 
 export function getConnectionState(onChange: (s: SocketConnectionState) => void) {
-  const emit = () => onChange(getCurrentState());
+  const onConnect = () => onChange({ status: "connected", id: socket.id });
+  const onDisconnect = (reason: string) =>
+    onChange({ status: "disconnected", reason });
+  const onConnectError = (error: Error) =>
+    onChange({ status: "reconnect_failed", message: error.message });
+  const onReconnectAttempt = (attempt: number) =>
+    onChange({ status: "reconnecting", attempt });
+  const onReconnect = () => onChange({ status: "connected", id: socket.id });
 
-  socket.on("connect", emit);
-  socket.on("disconnect", emit);
-  socket.on("connect_error", emit);
+  socket.on("connect", onConnect);
+  socket.on("disconnect", onDisconnect);
+  socket.on("connect_error", onConnectError);
+  socket.io.on("reconnect_attempt", onReconnectAttempt);
+  socket.io.on("reconnect", onReconnect);
 
-  emit();
+  onChange(getCurrentState());
 
   return () => {
-    socket.off("connect", emit);
-    socket.off("disconnect", emit);
-    socket.off("connect_error", emit);
+    socket.off("connect", onConnect);
+    socket.off("disconnect", onDisconnect);
+    socket.off("connect_error", onConnectError);
+    socket.io.off("reconnect_attempt", onReconnectAttempt);
+    socket.io.off("reconnect", onReconnect);
   };
 }
 
 function getCurrentState(): SocketConnectionState {
   if (!socket.connected) {
     return {
-      status: "disconnected",
-      reason: socket.disconnected
-        ? "尚未连接到服务器，请确认 npm.cmd run server 已启动"
-        : undefined,
+      status: socket.active ? "connecting" : "disconnected",
+      reason: socket.active ? undefined : "尚未连接到服务器",
     };
   }
   return { status: "connected", id: socket.id };

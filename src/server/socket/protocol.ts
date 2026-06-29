@@ -10,7 +10,11 @@ import type {
   RoomId,
 } from "../../game/types";
 import type { PlayerGameView } from "../../game/view";
-import type { Room, RoomMember } from "../rooms/room-types";
+import type { PublicTimerView, Room, RoomMember } from "../rooms/room-types";
+import type {
+  TimeControlConfig,
+  TimeControlMode,
+} from "../timer/time-control";
 
 // ---------------------------------------------------------------------------
 // PublicRoomView（对外安全暴露 — 不含 sessionToken）
@@ -28,6 +32,7 @@ export interface PublicRoomView {
   status: Room["status"];
   hostPlayerId: PlayerId;
   members: PublicRoomMember[];
+  timeControl: TimeControlConfig;
 }
 
 export function toPublicRoomView(room: Room): PublicRoomView {
@@ -35,6 +40,7 @@ export function toPublicRoomView(room: Room): PublicRoomView {
     roomId: room.roomId,
     status: room.status,
     hostPlayerId: room.hostPlayerId,
+    timeControl: room.timeControl,
     members: room.members.map((m: RoomMember) => ({
       playerId: m.playerId,
       nickname: m.nickname,
@@ -64,11 +70,17 @@ export interface ReconnectPayload {
   room: PublicRoomView;
   playerId: PlayerId;
   view?: PlayerGameView;
+  timer?: PublicTimerView;
   sessionToken: string;
 }
 
 export interface RoomPayload {
   room: PublicRoomView;
+}
+
+export interface GameViewPayload {
+  view: PlayerGameView;
+  timer: PublicTimerView;
 }
 
 export interface RoomDeletedPayload {
@@ -106,7 +118,7 @@ export interface SocketData {
 
 export interface ClientToServerEvents {
   "room:create": (
-    input: { nickname: string },
+    input: { nickname: string; timeControlMode?: TimeControlMode },
     ack: (result: SocketAck<CreateRoomPayload>) => void,
   ) => void;
 
@@ -132,11 +144,11 @@ export interface ClientToServerEvents {
 
   "game:action": (
     input: { action: GameAction },
-    ack: (result: SocketAck<{ view: PlayerGameView }>) => void,
+    ack: (result: SocketAck<GameViewPayload>) => void,
   ) => void;
 }
 
 export interface ServerToClientEvents {
   "room:updated": (payload: RoomPayload) => void;
-  "game:view": (payload: { view: PlayerGameView }) => void;
+  "game:view": (payload: GameViewPayload) => void;
 }

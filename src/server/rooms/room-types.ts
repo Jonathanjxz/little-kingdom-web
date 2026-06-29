@@ -4,7 +4,8 @@
  * 定义房间、成员等内存管理所需的核心类型。
  */
 
-import type { GameState, PlayerId, RoomId } from "../../game/types";
+import type { GamePhase, GameState, PlayerId, RoomId } from "../../game/types";
+import type { TimeControlConfig } from "../timer/time-control";
 
 export type RoomStatus = "waiting" | "playing" | "finished";
 
@@ -18,11 +19,31 @@ export interface RoomMember {
   sessionToken: string;
 }
 
+export interface RoomTimerState {
+  playerId: PlayerId;
+  phase: GamePhase;
+  startedAt: number;
+  deadlineAt: number;
+}
+
+export interface PublicTimerView {
+  mode: TimeControlConfig["mode"];
+  playerId?: PlayerId;
+  phase?: GamePhase;
+  startedAt?: number;
+  deadlineAt?: number;
+  serverNow: number;
+  baseSeconds?: number;
+  extraRemainingSeconds?: number;
+}
+
 export interface Room {
   roomId: RoomId;
   status: RoomStatus;
   hostPlayerId: PlayerId;
   members: RoomMember[];
+  timeControl: TimeControlConfig;
+  timerState?: RoomTimerState;
   gameState?: GameState;
   createdAt: number;
   updatedAt: number;
