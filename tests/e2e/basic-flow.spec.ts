@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+﻿import { expect, test } from "@playwright/test";
 
 async function waitForSocketStatus(page: import("@playwright/test").Page, expected: string) {
   await expect(page.locator('[data-testid="socket-status"]')).toContainText(expected);
@@ -6,7 +6,7 @@ async function waitForSocketStatus(page: import("@playwright/test").Page, expect
 
 test.describe("basic flow", () => {
   test("page loads and socket connects", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/debug");
     await expect(page.locator("h1")).toContainText("Kingdom Card Game");
     await expect(page.locator('[data-testid="nickname-input"]')).toBeVisible();
     await expect(page.locator('[data-testid="create-room-button"]')).toBeVisible();
@@ -14,7 +14,7 @@ test.describe("basic flow", () => {
   });
 
   test("Alice creates a room", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/debug");
     await waitForSocketStatus(page, "已连接");
     await page.fill('[data-testid="nickname-input"]', "Alice");
     await page.click('[data-testid="create-room-button"]');
@@ -26,7 +26,7 @@ test.describe("basic flow", () => {
 
   test("host can create none and standard time-control rooms", async ({ browser }) => {
     const nonePage = await browser.newPage();
-    await nonePage.goto("/");
+    await nonePage.goto("/debug");
     await waitForSocketStatus(nonePage, "已连接");
     await nonePage.fill('[data-testid="nickname-input"]', "NoTimer");
     await nonePage.selectOption('[data-testid="time-control-select"]', "none");
@@ -35,7 +35,7 @@ test.describe("basic flow", () => {
     await nonePage.close();
 
     const standardPage = await browser.newPage();
-    await standardPage.goto("/");
+    await standardPage.goto("/debug");
     await waitForSocketStatus(standardPage, "已连接");
     await standardPage.fill('[data-testid="nickname-input"]', "Standard");
     await standardPage.click('[data-testid="create-room-button"]');
@@ -47,7 +47,7 @@ test.describe("basic flow", () => {
 
   test("Bob joins Alice's room", async ({ browser }) => {
     const alicePage = await browser.newPage();
-    await alicePage.goto("/");
+    await alicePage.goto("/debug");
     await waitForSocketStatus(alicePage, "已连接");
     await alicePage.fill('[data-testid="nickname-input"]', "Alice");
     await alicePage.click('[data-testid="create-room-button"]');
@@ -56,7 +56,7 @@ test.describe("basic flow", () => {
     expect(roomId).toBeTruthy();
 
     const bobPage = await browser.newPage();
-    await bobPage.goto("/");
+    await bobPage.goto("/debug");
     await waitForSocketStatus(bobPage, "已连接");
     await bobPage.fill('[data-testid="nickname-input"]', "Bob");
     await bobPage.fill('[data-testid="room-id-input"]', roomId!);
@@ -70,7 +70,7 @@ test.describe("basic flow", () => {
 
   test("Alice starts the game and both players see hand area", async ({ browser }) => {
     const alicePage = await browser.newPage();
-    await alicePage.goto("/");
+    await alicePage.goto("/debug");
     await waitForSocketStatus(alicePage, "已连接");
     await alicePage.fill('[data-testid="nickname-input"]', "Alice");
     await alicePage.click('[data-testid="create-room-button"]');
@@ -79,7 +79,7 @@ test.describe("basic flow", () => {
     expect(roomId).toBeTruthy();
 
     const bobPage = await browser.newPage();
-    await bobPage.goto("/");
+    await bobPage.goto("/debug");
     await waitForSocketStatus(bobPage, "已连接");
     await bobPage.fill('[data-testid="nickname-input"]', "Bob");
     await bobPage.fill('[data-testid="room-id-input"]', roomId!);
@@ -103,7 +103,7 @@ test.describe("basic flow", () => {
 
   test("hidden info: no deck JSON exposed", async ({ browser }) => {
     const alicePage = await browser.newPage();
-    await alicePage.goto("/");
+    await alicePage.goto("/debug");
     await waitForSocketStatus(alicePage, "已连接");
     await alicePage.fill('[data-testid="nickname-input"]', "Alice");
     await alicePage.click('[data-testid="create-room-button"]');
@@ -112,7 +112,7 @@ test.describe("basic flow", () => {
     expect(roomId).toBeTruthy();
 
     const bobPage = await browser.newPage();
-    await bobPage.goto("/");
+    await bobPage.goto("/debug");
     await waitForSocketStatus(bobPage, "已连接");
     await bobPage.fill('[data-testid="nickname-input"]', "Bob");
     await bobPage.fill('[data-testid="room-id-input"]', roomId!);
@@ -130,7 +130,7 @@ test.describe("basic flow", () => {
 
   test("minimum action flow: play card then draw", async ({ browser }) => {
     const alicePage = await browser.newPage();
-    await alicePage.goto("/");
+    await alicePage.goto("/debug");
     await waitForSocketStatus(alicePage, "已连接");
     await alicePage.fill('[data-testid="nickname-input"]', "Alice");
     await alicePage.click('[data-testid="create-room-button"]');
@@ -139,7 +139,7 @@ test.describe("basic flow", () => {
     expect(roomId).toBeTruthy();
 
     const bobPage = await browser.newPage();
-    await bobPage.goto("/");
+    await bobPage.goto("/debug");
     await waitForSocketStatus(bobPage, "已连接");
     await bobPage.fill('[data-testid="nickname-input"]', "Bob");
     await bobPage.fill('[data-testid="room-id-input"]', roomId!);
@@ -189,7 +189,7 @@ test.describe("basic flow", () => {
     const aliceContext = await browser.newContext();
     const bobContext = await browser.newContext();
     const page = await aliceContext.newPage();
-    await page.goto("/");
+    await page.goto("/debug");
     await waitForSocketStatus(page, "已连接");
     await page.fill('[data-testid="nickname-input"]', "Alice");
     await page.click('[data-testid="create-room-button"]');
@@ -198,7 +198,7 @@ test.describe("basic flow", () => {
       .trim();
 
     const bobPage = await bobContext.newPage();
-    await bobPage.goto("/");
+    await bobPage.goto("/debug");
     await waitForSocketStatus(bobPage, "已连接");
     await bobPage.fill('[data-testid="nickname-input"]', "Bob");
     await bobPage.fill('[data-testid="room-id-input"]', roomId!);
@@ -231,7 +231,7 @@ test.describe("basic flow", () => {
     const aliceContext = await browser.newContext();
     const bobContext = await browser.newContext();
     const alicePage = await aliceContext.newPage();
-    await alicePage.goto("/");
+    await alicePage.goto("/debug");
     await waitForSocketStatus(alicePage, "已连接");
     await alicePage.fill('[data-testid="nickname-input"]', "Alice");
     await alicePage.click('[data-testid="create-room-button"]');
@@ -240,7 +240,7 @@ test.describe("basic flow", () => {
       .trim();
 
     const bobPage = await bobContext.newPage();
-    await bobPage.goto("/");
+    await bobPage.goto("/debug");
     await waitForSocketStatus(bobPage, "已连接");
     await bobPage.fill('[data-testid="nickname-input"]', "Bob");
     await bobPage.fill('[data-testid="room-id-input"]', roomId!);
@@ -268,7 +268,7 @@ test.describe("basic flow", () => {
 
   test("Bob disconnect shows offline in Alice's page", async ({ browser }) => {
     const alicePage = await browser.newPage();
-    await alicePage.goto("/");
+    await alicePage.goto("/debug");
     await waitForSocketStatus(alicePage, "已连接");
     await alicePage.fill('[data-testid="nickname-input"]', "Alice");
     await alicePage.click('[data-testid="create-room-button"]');
@@ -276,7 +276,7 @@ test.describe("basic flow", () => {
     const roomId = roomIdText?.replace("Room: ", "").trim();
 
     const bobPage = await browser.newPage();
-    await bobPage.goto("/");
+    await bobPage.goto("/debug");
     await waitForSocketStatus(bobPage, "已连接");
     await bobPage.fill('[data-testid="nickname-input"]', "Bob");
     await bobPage.fill('[data-testid="room-id-input"]', roomId!);
@@ -296,5 +296,100 @@ test.describe("basic flow", () => {
     ).toBeVisible({ timeout: 5000 });
 
     await alicePage.close();
+  });
+});
+
+test.describe("formal UI smoke", () => {
+  test("home presents The Last Opening entry experience", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator('[data-testid="home-title"]')).toHaveText("最后岗位");
+    await expect(page.locator('[data-testid="home-slogan"]')).toContainText(
+      "最后一个岗位被拿走前，完成你的转型",
+    );
+    await expect(page.locator('[data-testid="create-room-button"]')).toBeVisible();
+    await expect(page.locator('[data-testid="join-room-button"]')).toBeVisible();
+    await expect(page.locator('[data-testid="socket-status"]')).toContainText(
+      "已接入人才网络",
+    );
+  });
+
+  test("two players can reach the formal game board", async ({ browser }) => {
+    const aliceContext = await browser.newContext({
+      viewport: { width: 1366, height: 768 },
+    });
+    const bobContext = await browser.newContext({
+      viewport: { width: 1366, height: 768 },
+    });
+    const alicePage = await aliceContext.newPage();
+    const bobPage = await bobContext.newPage();
+
+    await alicePage.goto("/");
+    await expect(alicePage.locator('[data-testid="socket-status"]')).toContainText(
+      "已接入人才网络",
+    );
+    await alicePage.fill('[data-testid="nickname-input"]', "Alice");
+    await alicePage.selectOption('[data-testid="time-control-select"]', "standard");
+    await alicePage.click('[data-testid="create-room-button"]');
+
+    await expect(alicePage.locator('[data-testid="room-id-display"]')).toBeVisible();
+    await expect(alicePage.locator('[data-testid="room-time-control"]')).toContainText(
+      "标准",
+    );
+    const roomId = (await alicePage
+      .locator('[data-testid="room-id-display"]')
+      .textContent())
+      ?.replace("Room: ", "")
+      .trim();
+
+    await bobPage.goto("/");
+    await expect(bobPage.locator('[data-testid="socket-status"]')).toContainText(
+      "已接入人才网络",
+    );
+    await bobPage.fill('[data-testid="join-nickname-input"]', "Bob");
+    await bobPage.fill('[data-testid="room-id-input"]', roomId!);
+    await bobPage.click('[data-testid="join-room-button"]');
+
+    await expect(alicePage.locator('[data-testid="member-list"]')).toContainText("Bob");
+    await expect(bobPage.locator('[data-testid="member-list"]')).toContainText("Alice");
+    await alicePage.click('[data-testid="start-game-button"]');
+
+    await expect(alicePage.locator('[data-testid="game-board"]')).toBeVisible();
+    await expect(bobPage.locator('[data-testid="game-board"]')).toBeVisible();
+    await expect(alicePage.locator('[data-testid="timer-panel"]')).toBeVisible();
+    await expect(alicePage.locator('[data-testid="job-pool"]')).toBeVisible();
+    await expect(alicePage.locator('[data-testid="talent-market"]')).toBeVisible();
+    await expect(alicePage.locator('[data-testid="hand-area"]')).toBeVisible();
+    await expect(alicePage.locator('[data-testid="action-prompt"]')).toBeVisible();
+    await expect(bobPage.locator('[data-testid="action-prompt"]')).toBeVisible();
+
+    const aliceIsCurrent =
+      await alicePage.locator('[data-testid="action-prompt-own-turn"]').count() > 0;
+    const currentPage = aliceIsCurrent ? alicePage : bobPage;
+    const waitingPage = aliceIsCurrent ? bobPage : alicePage;
+    await expect(
+      currentPage.locator('[data-testid="action-prompt-own-turn"]'),
+    ).toBeVisible();
+    await expect(
+      waitingPage.locator('[data-testid="action-prompt-waiting"]'),
+    ).toBeVisible();
+
+    const soundToggle = currentPage.locator('[data-testid="sound-toggle"]');
+    await expect(soundToggle).toBeVisible();
+    await expect(soundToggle).toHaveText("音效：关");
+    await soundToggle.click();
+    await expect(soundToggle).toHaveText("音效：开");
+
+    for (const gamePage of [alicePage, bobPage]) {
+      const dimensions = await gamePage.evaluate(() => ({
+        scrollHeight: document.documentElement.scrollHeight,
+        innerHeight: window.innerHeight,
+      }));
+      expect(dimensions.scrollHeight).toBeLessThanOrEqual(
+        dimensions.innerHeight + 20,
+      );
+    }
+
+    await aliceContext.close();
+    await bobContext.close();
   });
 });
