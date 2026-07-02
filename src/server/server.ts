@@ -104,6 +104,14 @@ if (isMain) {
   if (existsSync(distDir)) {
     httpServer.on("request", (req, res) => {
       if (req.url === "/healthz") return; // already handled in createSocketServer
+      const requestUrl = req.url ?? "";
+      if (
+        requestUrl === "/socket.io" ||
+        requestUrl.startsWith("/socket.io/") ||
+        requestUrl.startsWith("/socket.io?")
+      ) {
+        return;
+      }
       if (!serveStaticFile(req, res, distDir)) {
         res.writeHead(404);
         res.end("Not Found");

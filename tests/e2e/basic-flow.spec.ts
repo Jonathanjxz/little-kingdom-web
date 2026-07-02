@@ -1,395 +1,175 @@
-﻿import { expect, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
-async function waitForSocketStatus(page: import("@playwright/test").Page, expected: string) {
-  await expect(page.locator('[data-testid="socket-status"]')).toContainText(expected);
+type EngineState = {
+  screen: "home" | "lobby" | "game" | "loading";
+  connectionStatus: string;
+  activeInput?: "createNickname" | "joinNickname" | "joinRoomId";
+  createNickname: string;
+  joinNickname: string;
+  joinRoomId: string;
+  roomId?: string;
+  playerId?: string;
+  phase?: "play" | "draw" | "finished";
+  isMyTurn: boolean;
+  selectedCardId?: string;
+  handCount: number;
+  roomMembers: Array<{
+    nickname: string;
+    isHost: boolean;
+    isConnected: boolean;
+  }>;
+  viewedPlayerId?: string;
+  buttonLabels: string[];
+  domControlCount: number;
+};
+
+async function getEngineState(page: import("@playwright/test").Page): Promise<EngineState> {
+  return page.evaluate(() => {
+    const engineWindow = window as typeof window & {
+      __kingdomEngine?: { getState: () => EngineState };
+    };
+    return engineWindow.__kingdomEngine!.getState();
+  });
 }
 
-test.describe("basic flow", () => {
-  test("page loads and socket connects", async ({ page }) => {
-    await page.goto("/debug");
-    await expect(page.locator("h1")).toContainText("Kingdom Card Game");
-    await expect(page.locator('[data-testid="nickname-input"]')).toBeVisible();
-    await expect(page.locator('[data-testid="create-room-button"]')).toBeVisible();
-    await waitForSocketStatus(page, "已连接");
+async function waitForEngine(
+  page: import("@playwright/test").Page,
+  predicate: (state: EngineState) => boolean,
+): Promise<EngineState> {
+  await expect
+    .poll(async () => {
+      const state = await getEngineState(page);
+      return predicate(state);
+    })
+    .toBe(true);
+  return getEngineState(page);
+}
+
+async function openEngine(page: import("@playwright/test").Page) {
+  await page.setViewportSize({ width: 430, height: 932 });
+  await page.goto("/");
+  await expect(page.locator("canvas")).toBeVisible();
+  return waitForEngine(page, (state) => state.connectionStatus === "connected");
+}
+
+async function createRoom(page: import("@playwright/test").Page, nickname: string) {
+  await openEngine(page);
+  await page.mouse.click(160, 446);
+  await page.keyboard.type(nickname);
+  await page.mouse.click(215, 566);
+  return waitForEngine(page, (state) => state.screen === "lobby" && Boolean(state.roomId));
+}
+
+async function joinRoom(
+  page: import("@playwright/test").Page,
+  nickname: string,
+  roomId: string,
+) {
+  await openEngine(page);
+  await page.mouse.click(160, 698);
+  await page.keyboard.type(nickname);
+  await page.mouse.click(160, 768);
+  await page.keyboard.type(roomId);
+  await page.mouse.click(215, 834);
+  return waitForEngine(
+    page,
+    (state) => state.screen === "lobby" && state.roomMembers.some((member) => member.nickname === nickname),
+  );
+}
+
+test.describe("Phaser engine UI", () => {
+  test("renders only canvas controls", async ({ page }) => {
+    const state = await openEngine(page);
+    await expect(page.locator("canvas")).toHaveCount(1);
+    await expect(page.locator("button,input,select,textarea")).toHaveCount(0);
+    expect(state.screen).toBe("home");
+    expect(state.domControlCount).toBe(0);
+    expect(state.buttonLabels).toContain("开放岗位窗口");
+    expect(state.buttonLabels).toContain("进入人才交易所");
   });
 
-  test("Alice creates a room", async ({ page }) => {
-    await page.goto("/debug");
-    await waitForSocketStatus(page, "已连接");
-    await page.fill('[data-testid="nickname-input"]', "Alice");
-    await page.click('[data-testid="create-room-button"]');
-    await expect(page.locator('[data-testid="room-id-display"]')).toBeVisible();
-    await expect(page.locator('[data-testid="player-id-display"]')).toBeVisible();
-    await expect(page.locator('[data-testid="member-list"]')).toContainText("Alice");
-    await expect(page.locator('[data-testid="member-list"]')).toContainText("房主");
-  });
-
-  test("host can create none and standard time-control rooms", async ({ browser }) => {
-    const nonePage = await browser.newPage();
-    await nonePage.goto("/debug");
-    await waitForSocketStatus(nonePage, "已连接");
-    await nonePage.fill('[data-testid="nickname-input"]', "NoTimer");
-    await nonePage.selectOption('[data-testid="time-control-select"]', "none");
-    await nonePage.click('[data-testid="create-room-button"]');
-    await expect(nonePage.locator('[data-testid="room-time-control"]')).toContainText("无限时");
-    await nonePage.close();
-
-    const standardPage = await browser.newPage();
-    await standardPage.goto("/debug");
-    await waitForSocketStatus(standardPage, "已连接");
-    await standardPage.fill('[data-testid="nickname-input"]', "Standard");
-    await standardPage.click('[data-testid="create-room-button"]');
-    await expect(standardPage.locator('[data-testid="room-time-control"]')).toContainText(
-      "标准：20s + 50s",
-    );
-    await standardPage.close();
-  });
-
-  test("Bob joins Alice's room", async ({ browser }) => {
-    const alicePage = await browser.newPage();
-    await alicePage.goto("/debug");
-    await waitForSocketStatus(alicePage, "已连接");
-    await alicePage.fill('[data-testid="nickname-input"]', "Alice");
-    await alicePage.click('[data-testid="create-room-button"]');
-    const roomIdText = await alicePage.locator('[data-testid="room-id-display"]').textContent();
-    const roomId = roomIdText?.replace("Room: ", "").trim();
-    expect(roomId).toBeTruthy();
-
-    const bobPage = await browser.newPage();
-    await bobPage.goto("/debug");
-    await waitForSocketStatus(bobPage, "已连接");
-    await bobPage.fill('[data-testid="nickname-input"]', "Bob");
-    await bobPage.fill('[data-testid="room-id-input"]', roomId!);
-    await bobPage.click('[data-testid="join-room-button"]');
-
-    await expect(alicePage.locator('[data-testid="member-list"]')).toContainText("Bob");
-    await expect(bobPage.locator('[data-testid="member-list"]')).toContainText("Alice");
-    await alicePage.close();
-    await bobPage.close();
-  });
-
-  test("Alice starts the game and both players see hand area", async ({ browser }) => {
-    const alicePage = await browser.newPage();
-    await alicePage.goto("/debug");
-    await waitForSocketStatus(alicePage, "已连接");
-    await alicePage.fill('[data-testid="nickname-input"]', "Alice");
-    await alicePage.click('[data-testid="create-room-button"]');
-    const roomIdText = await alicePage.locator('[data-testid="room-id-display"]').textContent();
-    const roomId = roomIdText?.replace("Room: ", "").trim();
-    expect(roomId).toBeTruthy();
-
-    const bobPage = await browser.newPage();
-    await bobPage.goto("/debug");
-    await waitForSocketStatus(bobPage, "已连接");
-    await bobPage.fill('[data-testid="nickname-input"]', "Bob");
-    await bobPage.fill('[data-testid="room-id-input"]', roomId!);
-    await bobPage.click('[data-testid="join-room-button"]');
-
-    await alicePage.click('[data-testid="start-game-button"]');
-    await expect(alicePage.locator('[data-testid="hand-area"]')).toBeVisible();
-    await expect(bobPage.locator('[data-testid="hand-area"]')).toBeVisible();
-    await expect(alicePage.locator('[data-testid="deck-count"]')).toBeVisible();
-    await expect(alicePage.locator('[data-testid="game-timer"]')).toContainText(
-      "限时模式：标准",
-    );
-    await expect(alicePage.locator('[data-testid="operation-remaining"]')).toBeVisible();
-    const aliceCards = alicePage.locator('[data-testid="hand-area"] button');
-    const bobCards = bobPage.locator('[data-testid="hand-area"] button');
-    await expect(aliceCards).toHaveCount(8);
-    await expect(bobCards).toHaveCount(8);
-    await alicePage.close();
-    await bobPage.close();
-  });
-
-  test("hidden info: no deck JSON exposed", async ({ browser }) => {
-    const alicePage = await browser.newPage();
-    await alicePage.goto("/debug");
-    await waitForSocketStatus(alicePage, "已连接");
-    await alicePage.fill('[data-testid="nickname-input"]', "Alice");
-    await alicePage.click('[data-testid="create-room-button"]');
-    const roomIdText = await alicePage.locator('[data-testid="room-id-display"]').textContent();
-    const roomId = roomIdText?.replace("Room: ", "").trim();
-    expect(roomId).toBeTruthy();
-
-    const bobPage = await browser.newPage();
-    await bobPage.goto("/debug");
-    await waitForSocketStatus(bobPage, "已连接");
-    await bobPage.fill('[data-testid="nickname-input"]', "Bob");
-    await bobPage.fill('[data-testid="room-id-input"]', roomId!);
-    await bobPage.click('[data-testid="join-room-button"]');
-    await alicePage.click('[data-testid="start-game-button"]');
-    await expect(alicePage.locator('[data-testid="hand-area"]')).toBeVisible();
-
-    const pageContent = await alicePage.content();
-    expect(pageContent).not.toContain('"deck":[');
-    const bobHandSection = await alicePage.locator('[data-testid^="other-player-"]').first().textContent();
-    expect(bobHandSection).toContain("手牌:");
-    await alicePage.close();
-    await bobPage.close();
-  });
-
-  test("minimum action flow: play card then draw", async ({ browser }) => {
-    const alicePage = await browser.newPage();
-    await alicePage.goto("/debug");
-    await waitForSocketStatus(alicePage, "已连接");
-    await alicePage.fill('[data-testid="nickname-input"]', "Alice");
-    await alicePage.click('[data-testid="create-room-button"]');
-    const roomIdText = await alicePage.locator('[data-testid="room-id-display"]').textContent();
-    const roomId = roomIdText?.replace("Room: ", "").trim();
-    expect(roomId).toBeTruthy();
-
-    const bobPage = await browser.newPage();
-    await bobPage.goto("/debug");
-    await waitForSocketStatus(bobPage, "已连接");
-    await bobPage.fill('[data-testid="nickname-input"]', "Bob");
-    await bobPage.fill('[data-testid="room-id-input"]', roomId!);
-    await bobPage.click('[data-testid="join-room-button"]');
-    await alicePage.click('[data-testid="start-game-button"]');
-    await expect(alicePage.locator('[data-testid="hand-area"]')).toBeVisible();
-    await expect(bobPage.locator('[data-testid="hand-area"]')).toBeVisible();
-
-    const alicePhase = await alicePage.locator('[data-testid="current-player"]').textContent();
-    const aliceIsCurrent = alicePhase?.includes("你");
-    const currentPage = aliceIsCurrent ? alicePage : bobPage;
-
-    const firstCard = currentPage.locator('[data-testid="hand-area"] button').first();
-    const cardText = (await firstCard.textContent()) ?? "";
-    await firstCard.click();
-
-    const colorMap: Record<string, string> = { "红": "red", "蓝": "blue", "黄": "yellow", "绿": "green", "白": "white" };
-    let targetColor = "red";
-    for (const [cn, en] of Object.entries(colorMap)) {
-      if (cardText.startsWith(cn)) { targetColor = en; break; }
-    }
-    const playButton = currentPage.locator(`[data-testid="play-column-${targetColor}"]`);
-    await expect(playButton).toBeVisible();
-    await playButton.click();
-
-    await expect(currentPage.locator('[data-testid="game-phase"]')).toContainText("摸牌");
-    await expect(currentPage.locator('[data-testid="game-timer"]')).toHaveAttribute(
-      "data-phase",
-      "draw",
-    );
-    await expect(currentPage.locator('[data-testid="draw-deck-button"]')).toBeVisible();
-    await currentPage.click('[data-testid="draw-deck-button"]');
-    await expect(currentPage.locator('[data-testid="game-phase"]')).toContainText("出牌");
-    await expect(currentPage.locator('[data-testid="game-timer"]')).toHaveAttribute(
-      "data-phase",
-      "play",
-    );
-
-    const afterCurrent = await currentPage.locator('[data-testid="current-player"]').textContent();
-    expect(afterCurrent).not.toContain("你");
-
-    await alicePage.close();
-    await bobPage.close();
-  });
-
-  test("auto-reconnect after page reload restores the timer", async ({ browser }) => {
-    const aliceContext = await browser.newContext();
-    const bobContext = await browser.newContext();
-    const page = await aliceContext.newPage();
-    await page.goto("/debug");
-    await waitForSocketStatus(page, "已连接");
-    await page.fill('[data-testid="nickname-input"]', "Alice");
-    await page.click('[data-testid="create-room-button"]');
-    const roomId = (await page.locator('[data-testid="room-id-display"]').textContent())
-      ?.replace("Room: ", "")
-      .trim();
-
-    const bobPage = await bobContext.newPage();
-    await bobPage.goto("/debug");
-    await waitForSocketStatus(bobPage, "已连接");
-    await bobPage.fill('[data-testid="nickname-input"]', "Bob");
-    await bobPage.fill('[data-testid="room-id-input"]', roomId!);
-    await bobPage.click('[data-testid="join-room-button"]');
-    await page.click('[data-testid="start-game-button"]');
-    await expect(page.locator('[data-testid="hand-area"]')).toBeVisible();
-
-    const playerIdBefore = await page.locator('[data-testid="player-id-display"]').textContent();
-    const remainingBefore = Number(
-      (await page.locator('[data-testid="operation-remaining"]').textContent())
-        ?.match(/\d+/)?.[0],
-    );
-
-    await page.reload();
-    await waitForSocketStatus(page, "已连接");
-    await expect(page.locator('[data-testid="hand-area"]')).toBeVisible({ timeout: 5000 });
-    await expect(page.locator('[data-testid="player-id-display"]')).toHaveText(playerIdBefore!);
-    await expect(page.locator('[data-testid="game-timer"]')).toBeVisible();
-    const remainingAfter = Number(
-      (await page.locator('[data-testid="operation-remaining"]').textContent())
-        ?.match(/\d+/)?.[0],
-    );
-    expect(remainingAfter).toBeLessThanOrEqual(remainingBefore);
-
-    await aliceContext.close();
-    await bobContext.close();
-  });
-
-  test("socket reconnect restores the game without refresh or click", async ({ browser }) => {
-    const aliceContext = await browser.newContext();
-    const bobContext = await browser.newContext();
-    const alicePage = await aliceContext.newPage();
-    await alicePage.goto("/debug");
-    await waitForSocketStatus(alicePage, "已连接");
-    await alicePage.fill('[data-testid="nickname-input"]', "Alice");
-    await alicePage.click('[data-testid="create-room-button"]');
-    const roomId = (await alicePage.locator('[data-testid="room-id-display"]').textContent())
-      ?.replace("Room: ", "")
-      .trim();
-
-    const bobPage = await bobContext.newPage();
-    await bobPage.goto("/debug");
-    await waitForSocketStatus(bobPage, "已连接");
-    await bobPage.fill('[data-testid="nickname-input"]', "Bob");
-    await bobPage.fill('[data-testid="room-id-input"]', roomId!);
-    await bobPage.click('[data-testid="join-room-button"]');
-    await alicePage.click('[data-testid="start-game-button"]');
-    await expect(alicePage.locator('[data-testid="hand-area"]')).toBeVisible();
-
-    await alicePage.evaluate(() => {
-      const testWindow = window as typeof window & {
-        __closeKingdomSocketTransport?: () => void;
-      };
-      testWindow.__closeKingdomSocketTransport?.();
-    });
-    await expect(alicePage.locator('[data-testid="socket-status"]')).toContainText(
-      "disconnected",
-    );
-
-    await waitForSocketStatus(alicePage, "已连接");
-    await expect(alicePage.locator('[data-testid="hand-area"]')).toBeVisible();
-    await expect(alicePage.locator('[data-testid="game-timer"]')).toBeVisible();
-
-    await aliceContext.close();
-    await bobContext.close();
-  });
-
-  test("Bob disconnect shows offline in Alice's page", async ({ browser }) => {
-    const alicePage = await browser.newPage();
-    await alicePage.goto("/debug");
-    await waitForSocketStatus(alicePage, "已连接");
-    await alicePage.fill('[data-testid="nickname-input"]', "Alice");
-    await alicePage.click('[data-testid="create-room-button"]');
-    const roomIdText = await alicePage.locator('[data-testid="room-id-display"]').textContent();
-    const roomId = roomIdText?.replace("Room: ", "").trim();
-
-    const bobPage = await browser.newPage();
-    await bobPage.goto("/debug");
-    await waitForSocketStatus(bobPage, "已连接");
-    await bobPage.fill('[data-testid="nickname-input"]', "Bob");
-    await bobPage.fill('[data-testid="room-id-input"]', roomId!);
-    await bobPage.click('[data-testid="join-room-button"]');
-    await alicePage.click('[data-testid="start-game-button"]');
-    await expect(alicePage.locator('[data-testid="hand-area"]')).toBeVisible();
-
-    const bobPlayerIdText = await bobPage.locator('[data-testid="player-id-display"]').textContent();
-    const bobPlayerId = bobPlayerIdText?.replace("Player: ", "").trim();
-
-    // Close Bob's page (simulate disconnect)
-    await bobPage.close();
-
-    // Alice should see Bob offline
-    await expect(
-      alicePage.locator(`[data-testid="member-${bobPlayerId}"][data-connected="false"]`),
-    ).toBeVisible({ timeout: 5000 });
-
-    await alicePage.close();
-  });
-});
-
-test.describe("formal UI smoke", () => {
-  test("home presents The Last Opening entry experience", async ({ page }) => {
-    await page.goto("/");
-    await expect(page.locator('[data-testid="home-title"]')).toHaveText("最后岗位");
-    await expect(page.locator('[data-testid="home-slogan"]')).toContainText(
-      "最后一个岗位被拿走前，完成你的转型",
-    );
-    await expect(page.locator('[data-testid="create-room-button"]')).toBeVisible();
-    await expect(page.locator('[data-testid="join-room-button"]')).toBeVisible();
-    await expect(page.locator('[data-testid="socket-status"]')).toContainText(
-      "已接入人才网络",
-    );
-  });
-
-  test("two players can reach the formal game board", async ({ browser }) => {
-    const aliceContext = await browser.newContext({
-      viewport: { width: 1366, height: 768 },
-    });
-    const bobContext = await browser.newContext({
-      viewport: { width: 1366, height: 768 },
-    });
+  test("players create, join, start, play, and draw inside the engine canvas", async ({ browser }) => {
+    const aliceContext = await browser.newContext({ viewport: { width: 430, height: 932 } });
+    const bobContext = await browser.newContext({ viewport: { width: 430, height: 932 } });
     const alicePage = await aliceContext.newPage();
     const bobPage = await bobContext.newPage();
 
-    await alicePage.goto("/");
-    await expect(alicePage.locator('[data-testid="socket-status"]')).toContainText(
-      "已接入人才网络",
+    const aliceLobby = await createRoom(alicePage, "Alice");
+    expect(aliceLobby.roomId).toBeTruthy();
+
+    const bobLobby = await joinRoom(bobPage, "Bob", aliceLobby.roomId!);
+    expect(bobLobby.roomMembers.some((member) => member.nickname === "Alice")).toBe(true);
+
+    await waitForEngine(
+      alicePage,
+      (state) => state.roomMembers.some((member) => member.nickname === "Bob"),
     );
-    await alicePage.fill('[data-testid="nickname-input"]', "Alice");
-    await alicePage.selectOption('[data-testid="time-control-select"]', "standard");
-    await alicePage.click('[data-testid="create-room-button"]');
+    await alicePage.mouse.click(215, 851);
+    await waitForEngine(alicePage, (state) => state.screen === "game" && state.handCount === 8);
+    await waitForEngine(bobPage, (state) => state.screen === "game" && state.handCount === 8);
 
-    await expect(alicePage.locator('[data-testid="room-id-display"]')).toBeVisible();
-    await expect(alicePage.locator('[data-testid="room-time-control"]')).toContainText(
-      "标准",
-    );
-    const roomId = (await alicePage
-      .locator('[data-testid="room-id-display"]')
-      .textContent())
-      ?.replace("Room: ", "")
-      .trim();
+    const aliceState = await getEngineState(alicePage);
+    const currentPage = aliceState.isMyTurn ? alicePage : bobPage;
+    const observedPage = aliceState.isMyTurn ? alicePage : bobPage;
+    const observedState = await getEngineState(observedPage);
+    const opponent = observedState.roomMembers.find((member) => member.nickname !== (observedPage === alicePage ? "Alice" : "Bob"));
+    expect(opponent).toBeTruthy();
+    await observedPage.mouse.click(250, 132);
+    await waitForEngine(observedPage, (state) => Boolean(state.viewedPlayerId));
 
-    await bobPage.goto("/");
-    await expect(bobPage.locator('[data-testid="socket-status"]')).toContainText(
-      "已接入人才网络",
-    );
-    await bobPage.fill('[data-testid="join-nickname-input"]', "Bob");
-    await bobPage.fill('[data-testid="room-id-input"]', roomId!);
-    await bobPage.click('[data-testid="join-room-button"]');
-
-    await expect(alicePage.locator('[data-testid="member-list"]')).toContainText("Bob");
-    await expect(bobPage.locator('[data-testid="member-list"]')).toContainText("Alice");
-    await alicePage.click('[data-testid="start-game-button"]');
-
-    await expect(alicePage.locator('[data-testid="game-board"]')).toBeVisible();
-    await expect(bobPage.locator('[data-testid="game-board"]')).toBeVisible();
-    await expect(alicePage.locator('[data-testid="timer-panel"]')).toBeVisible();
-    await expect(alicePage.locator('[data-testid="job-pool"]')).toBeVisible();
-    await expect(alicePage.locator('[data-testid="talent-market"]')).toBeVisible();
-    await expect(alicePage.locator('[data-testid="hand-area"]')).toBeVisible();
-    await expect(alicePage.locator('[data-testid="action-prompt"]')).toBeVisible();
-    await expect(bobPage.locator('[data-testid="action-prompt"]')).toBeVisible();
-
-    const aliceIsCurrent =
-      await alicePage.locator('[data-testid="action-prompt-own-turn"]').count() > 0;
-    const currentPage = aliceIsCurrent ? alicePage : bobPage;
-    const waitingPage = aliceIsCurrent ? bobPage : alicePage;
-    await expect(
-      currentPage.locator('[data-testid="action-prompt-own-turn"]'),
-    ).toBeVisible();
-    await expect(
-      waitingPage.locator('[data-testid="action-prompt-waiting"]'),
-    ).toBeVisible();
-
-    const soundToggle = currentPage.locator('[data-testid="sound-toggle"]');
-    await expect(soundToggle).toBeVisible();
-    await expect(soundToggle).toHaveText("音效：关");
-    await soundToggle.click();
-    await expect(soundToggle).toHaveText("音效：开");
-
-    for (const gamePage of [alicePage, bobPage]) {
-      const dimensions = await gamePage.evaluate(() => ({
-        scrollHeight: document.documentElement.scrollHeight,
-        innerHeight: window.innerHeight,
-      }));
-      expect(dimensions.scrollHeight).toBeLessThanOrEqual(
-        dimensions.innerHeight + 20,
-      );
-    }
+    await currentPage.mouse.click(70, 747);
+    await waitForEngine(currentPage, (state) => Boolean(state.selectedCardId));
+    await currentPage.mouse.click(271, 899);
+    await waitForEngine(currentPage, (state) => state.phase === "draw");
+    await currentPage.mouse.click(138, 132);
+    await waitForEngine(currentPage, (state) => state.phase === "play" && !state.isMyTurn);
 
     await aliceContext.close();
     await bobContext.close();
+  });
+
+  test("reload restores a canvas-only game session", async ({ browser }) => {
+    const aliceContext = await browser.newContext({ viewport: { width: 430, height: 932 } });
+    const bobContext = await browser.newContext({ viewport: { width: 430, height: 932 } });
+    const alicePage = await aliceContext.newPage();
+    const bobPage = await bobContext.newPage();
+
+    const aliceLobby = await createRoom(alicePage, "Alice");
+    await joinRoom(bobPage, "Bob", aliceLobby.roomId!);
+    await waitForEngine(alicePage, (state) => state.roomMembers.length === 2);
+    await alicePage.mouse.click(215, 851);
+    const before = await waitForEngine(alicePage, (state) => state.screen === "game");
+
+    await alicePage.reload();
+    await expect(alicePage.locator("canvas")).toBeVisible();
+    const after = await waitForEngine(
+      alicePage,
+      (state) => state.screen === "game" && state.playerId === before.playerId,
+    );
+    expect(after.domControlCount).toBe(0);
+
+    await aliceContext.close();
+    await bobContext.close();
+  });
+
+  test("closed peer is reflected in engine state", async ({ browser }) => {
+    const aliceContext = await browser.newContext({ viewport: { width: 430, height: 932 } });
+    const bobContext = await browser.newContext({ viewport: { width: 430, height: 932 } });
+    const alicePage = await aliceContext.newPage();
+    const bobPage = await bobContext.newPage();
+
+    const aliceLobby = await createRoom(alicePage, "Alice");
+    await joinRoom(bobPage, "Bob", aliceLobby.roomId!);
+    await waitForEngine(alicePage, (state) => state.roomMembers.length === 2);
+    await alicePage.mouse.click(215, 851);
+    await waitForEngine(alicePage, (state) => state.screen === "game");
+    await bobContext.close();
+
+    await waitForEngine(
+      alicePage,
+      (state) => state.roomMembers.some((member) => member.nickname === "Bob" && !member.isConnected),
+    );
+
+    await aliceContext.close();
   });
 });

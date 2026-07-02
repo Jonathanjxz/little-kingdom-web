@@ -1,8 +1,5 @@
-import { DebugPage } from "./pages/DebugPage";
-import { FormalGameApp } from "./pages/HomePage";
+import { PhaserGameApp } from "./engine/PhaserGameApp";
 
 export function App() {
-  return window.location.pathname === "/debug"
-    ? <DebugPage />
-    : <FormalGameApp />;
+  return <PhaserGameApp />;
 }
