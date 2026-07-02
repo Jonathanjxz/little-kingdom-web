@@ -13,6 +13,7 @@ import {
 } from "../gameActions";
 import { clearSession, loadSession, saveSession } from "../hooks/useSavedSession";
 import { getConnectionState, socket, type SocketConnectionState } from "../socket";
+import { BASE_GAME_HEIGHT, GAME_WIDTH } from "./layout";
 
 type Screen = "home" | "lobby" | "game" | "loading";
 type ActiveInput = "createNickname" | "joinNickname" | "joinRoomId";
@@ -57,8 +58,6 @@ declare global {
   }
 }
 
-const GAME_WIDTH = 430;
-const GAME_HEIGHT = 932;
 const STORAGE_FALLBACK_NICKNAME = "候选人";
 
 const TRACK_META: Record<CardColor, { label: string; code: string; color: number }> = {
@@ -112,7 +111,10 @@ export class KingdomScene extends Phaser.Scene {
   private selectedCardId?: Card["id"];
   private viewedPlayerId?: PlayerId;
   private renderScale = 1;
+  private screenWidth = GAME_WIDTH;
+  private screenHeight = BASE_GAME_HEIGHT;
   private activeInput?: ActiveInput;
+  private keyboardProxy?: HTMLInputElement;
   private createNickname = "";
   private joinNickname = "";
   private joinRoomId = "";
@@ -130,12 +132,15 @@ export class KingdomScene extends Phaser.Scene {
     const renderWidth = Number(this.game.config.width);
     const renderHeight = Number(this.game.config.height);
     this.renderScale = renderWidth / GAME_WIDTH;
+    this.screenWidth = renderWidth / this.renderScale;
+    this.screenHeight = renderHeight / this.renderScale;
     this.cameras.main.setViewport(0, 0, renderWidth, renderHeight);
     this.cameras.main.setSize(renderWidth, renderHeight);
     this.cameras.main.setZoom(1);
     this.cameras.main.setScroll(0, 0);
     this.root = this.add.container(0, 0);
     this.root.setScale(this.renderScale);
+    this.ensureKeyboardProxy();
     this.input.setDefaultCursor("default");
     this.game.canvas.addEventListener("pointerup", this.handleCanvasPointerUp);
     window.addEventListener("keydown", this.handleKeyDown);
@@ -169,6 +174,10 @@ export class KingdomScene extends Phaser.Scene {
     socket.off("connect", this.restoreSavedSession);
     this.game.canvas.removeEventListener("pointerup", this.handleCanvasPointerUp);
     window.removeEventListener("keydown", this.handleKeyDown);
+    this.keyboardProxy?.removeEventListener("input", this.handleProxyInput);
+    this.keyboardProxy?.removeEventListener("keydown", this.handleProxyKeyDown);
+    this.keyboardProxy?.remove();
+    this.keyboardProxy = undefined;
     if (window.__kingdomEngine?.getState === this.getDebugState) {
       window.__kingdomEngine = undefined;
     }
@@ -248,9 +257,13 @@ export class KingdomScene extends Phaser.Scene {
 
   private handleKeyDown = (event: KeyboardEvent) => {
     if (!this.activeInput) return;
+    if (event.target instanceof HTMLElement) {
+      const tag = event.target.tagName.toLowerCase();
+      if (tag === "input" || tag === "textarea" || event.target.isContentEditable) return;
+    }
     if (event.key === "Tab") {
       event.preventDefault();
-      this.activeInput = this.activeInput === "createNickname" ? "joinNickname" : undefined;
+      this.activateNextInput();
       this.render();
       return;
     }
@@ -265,24 +278,28 @@ export class KingdomScene extends Phaser.Scene {
       return;
     }
     if (event.key === "Backspace") {
-      this.setInputValue(this.activeInput, this.getInputValue(this.activeInput).slice(0, -1));
+      this.setInputValue(
+        this.activeInput,
+        this.sanitizeInputValue(this.activeInput, this.getInputValue(this.activeInput).slice(0, -1)),
+      );
       this.render();
       return;
     }
     if (event.key.length !== 1 || event.metaKey || event.ctrlKey || event.altKey) return;
 
-    const next = `${this.getInputValue(this.activeInput)}${event.key}`;
-    const maxLength = this.activeInput === "joinRoomId" ? 22 : 14;
-    if (next.length > maxLength) return;
-    if (this.activeInput === "joinRoomId" && !/^[A-Za-z0-9_-]+$/.test(event.key)) return;
+    const next = this.sanitizeInputValue(
+      this.activeInput,
+      `${this.getInputValue(this.activeInput)}${event.key}`,
+    );
+    if (next === this.getInputValue(this.activeInput)) return;
     this.setInputValue(this.activeInput, next);
     this.render();
   };
 
   private handleCanvasPointerUp = (event: PointerEvent) => {
     const rect = this.game.canvas.getBoundingClientRect();
-    const x = ((event.clientX - rect.left) / rect.width) * GAME_WIDTH;
-    const y = ((event.clientY - rect.top) / rect.height) * GAME_HEIGHT;
+    const x = ((event.clientX - rect.left) / rect.width) * this.screenWidth;
+    const y = ((event.clientY - rect.top) / rect.height) * this.screenHeight;
     for (let index = this.clickTargets.length - 1; index >= 0; index--) {
       const target = this.clickTargets[index]!;
       if (
@@ -296,7 +313,7 @@ export class KingdomScene extends Phaser.Scene {
       }
     }
     if (this.activeInput) {
-      this.activeInput = undefined;
+      this.deactivateInput();
       this.render();
     }
   };
@@ -311,6 +328,110 @@ export class KingdomScene extends Phaser.Scene {
     if (input === "createNickname") this.createNickname = value;
     else if (input === "joinNickname") this.joinNickname = value;
     else this.joinRoomId = value;
+    if (this.activeInput === input && this.keyboardProxy && this.keyboardProxy.value !== value) {
+      this.keyboardProxy.value = value;
+    }
+  }
+
+  private ensureKeyboardProxy(): HTMLInputElement {
+    if (this.keyboardProxy) return this.keyboardProxy;
+    const input = document.createElement("input");
+    input.className = "kingdom-keyboard-proxy";
+    input.type = "text";
+    input.autocomplete = "off";
+    input.autocapitalize = "off";
+    input.spellcheck = false;
+    input.enterKeyHint = "done";
+    input.setAttribute("aria-hidden", "true");
+    input.addEventListener("input", this.handleProxyInput);
+    input.addEventListener("keydown", this.handleProxyKeyDown);
+    document.body.appendChild(input);
+    this.keyboardProxy = input;
+    return input;
+  }
+
+  private handleProxyInput = () => {
+    if (!this.activeInput || !this.keyboardProxy) return;
+    const value = this.sanitizeInputValue(this.activeInput, this.keyboardProxy.value);
+    this.setInputValue(this.activeInput, value);
+    if (this.keyboardProxy.value !== value) {
+      this.keyboardProxy.value = value;
+      this.keyboardProxy.setSelectionRange(value.length, value.length);
+    }
+    this.render();
+  };
+
+  private handleProxyKeyDown = (event: KeyboardEvent) => {
+    if (!this.activeInput) return;
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (this.activeInput === "createNickname") this.createRoom();
+      if (this.activeInput === "joinNickname" || this.activeInput === "joinRoomId") this.joinRoom();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      this.deactivateInput();
+      this.render();
+    } else if (event.key === "Tab") {
+      event.preventDefault();
+      this.activateNextInput();
+      this.render();
+      this.focusKeyboardProxy();
+    }
+  };
+
+  private activateInput(input: ActiveInput): void {
+    this.activeInput = input;
+    this.render();
+    this.focusKeyboardProxy();
+  }
+
+  private deactivateInput(): void {
+    this.activeInput = undefined;
+    this.keyboardProxy?.blur();
+  }
+
+  private activateNextInput(): void {
+    const next = this.activeInput === "createNickname"
+      ? "joinNickname"
+      : this.activeInput === "joinNickname"
+        ? "joinRoomId"
+        : undefined;
+    if (next) this.activeInput = next;
+    else this.deactivateInput();
+  }
+
+  private focusKeyboardProxy(): void {
+    if (!this.activeInput) return;
+    const input = this.ensureKeyboardProxy();
+    const value = this.getInputValue(this.activeInput);
+    input.value = value;
+    input.maxLength = this.inputMaxLength(this.activeInput);
+    input.inputMode = this.activeInput === "joinRoomId" ? "latin" : "text";
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(value.length, value.length);
+  }
+
+  private positionKeyboardProxy(x: number, y: number, width: number, height: number): void {
+    if (!this.keyboardProxy) return;
+    const rect = this.game.canvas.getBoundingClientRect();
+    const scaleX = rect.width / this.screenWidth;
+    const scaleY = rect.height / this.screenHeight;
+    this.keyboardProxy.style.left = `${rect.left + x * scaleX}px`;
+    this.keyboardProxy.style.top = `${rect.top + y * scaleY}px`;
+    this.keyboardProxy.style.width = `${Math.max(24, width * scaleX)}px`;
+    this.keyboardProxy.style.height = `${Math.max(24, height * scaleY)}px`;
+  }
+
+  private sanitizeInputValue(input: ActiveInput, value: string): string {
+    const maxLength = this.inputMaxLength(input);
+    const filtered = input === "joinRoomId"
+      ? value.replace(/[^A-Za-z0-9_-]/g, "")
+      : value;
+    return [...filtered].slice(0, maxLength).join("");
+  }
+
+  private inputMaxLength(input: ActiveInput): number {
+    return input === "joinRoomId" ? 22 : 14;
   }
 
   private getDebugState(): EngineDebugState {
@@ -334,7 +455,7 @@ export class KingdomScene extends Phaser.Scene {
       })) ?? [],
       viewedPlayerId: this.viewedPlayerId,
       buttonLabels: [...this.buttonLabels],
-      domControlCount: document.querySelectorAll("button,input,select,textarea").length,
+      domControlCount: document.querySelectorAll("button,input:not(.kingdom-keyboard-proxy),select,textarea").length,
     };
   }
 
@@ -365,18 +486,18 @@ export class KingdomScene extends Phaser.Scene {
   private drawBackground(): void {
     const bg = this.track(this.add.graphics());
     bg.fillStyle(0x140a18, 1);
-    bg.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    bg.fillRect(0, 0, this.screenWidth, this.screenHeight);
 
     bg.fillStyle(0xff6b3d, 0.13);
     bg.fillCircle(345, 82, 118);
     bg.fillStyle(0x5ce6a4, 0.08);
-    bg.fillCircle(54, 790, 170);
+    bg.fillCircle(54, this.screenHeight - 142, 170);
     bg.lineStyle(1, 0x38294b, 0.42);
-    for (let y = 32; y < GAME_HEIGHT; y += 34) {
-      bg.lineBetween(18, y, GAME_WIDTH - 18, y + 44);
+    for (let y = 32; y < this.screenHeight; y += 34) {
+      bg.lineBetween(18, y, this.screenWidth - 18, y + 44);
     }
     bg.lineStyle(1, 0xffd166, 0.12);
-    bg.strokeCircle(GAME_WIDTH / 2, 438, 240);
+    bg.strokeCircle(this.screenWidth / 2, Math.min(438, this.screenHeight / 2), 240);
   }
 
   private renderHome(): void {
@@ -412,9 +533,10 @@ export class KingdomScene extends Phaser.Scene {
   }
 
   private renderLoading(): void {
-    this.drawEmblem(GAME_WIDTH / 2, 390, 90, 0xffd166);
-    this.text(GAME_WIDTH / 2, 500, "读取存档", 28, 0xf5f0e8, { align: "center", fontStyle: "bold" }).setOrigin(0.5);
-    this.text(GAME_WIDTH / 2, 540, this.connectionLabel(), 16, 0xbba6dc, { align: "center" }).setOrigin(0.5);
+    const centerY = this.screenHeight / 2;
+    this.drawEmblem(GAME_WIDTH / 2, centerY - 76, 90, 0xffd166);
+    this.text(GAME_WIDTH / 2, centerY + 34, "读取存档", 28, 0xf5f0e8, { align: "center", fontStyle: "bold" }).setOrigin(0.5);
+    this.text(GAME_WIDTH / 2, centerY + 74, this.connectionLabel(), 16, 0xbba6dc, { align: "center" }).setOrigin(0.5);
   }
 
   private renderLobby(): void {
@@ -466,22 +588,16 @@ export class KingdomScene extends Phaser.Scene {
     const selectedPlaceColor = getResolvedPlaceColor(selectedCard, legalColors);
     const viewedPlayer = this.getViewedPlayer(view);
 
-    this.drawStatusPanel(
-      view,
-      isMyTurn,
-      isMyTurn && isDraw,
-      view.players.filter((player) => player.id !== this.playerId),
-    );
+    this.drawStatusPanel(view, isMyTurn, view.players.filter((player) => player.id !== this.playerId));
     this.drawColumns(view, viewedPlayer);
-    this.drawMarket(view, isMyTurn && isDraw);
-    this.drawHand(view, isMyTurn && isPlay, selectedCard, selectedPlaceColor);
+    this.drawMarket(view);
+    this.drawHand(view, isMyTurn && isPlay, isMyTurn && isDraw, selectedCard, selectedPlaceColor);
     if (view.finalResult) this.drawFinalRanking(view);
   }
 
   private drawStatusPanel(
     view: PlayerGameView,
     isMyTurn: boolean,
-    canDrawFromDeck: boolean,
     opponents: PublicPlayerView[],
   ): void {
     this.roundRect(16, 16, 398, 142, 22, 0x161027, 0.98, isMyTurn ? 0xffd166 : 0x654a8a, 2);
@@ -506,11 +622,7 @@ export class KingdomScene extends Phaser.Scene {
     this.roundRect(32, 118, 140, 28, 12, 0x0b0914, 1, 0xff744a, 1);
     this.text(46, 125, "岗位池", 12, 0xbba6dc, { fontStyle: "bold" });
     this.text(94, 122, String(view.deckCount), 18, 0xff744a, { fontStyle: "bold" });
-    if (canDrawFromDeck) {
-      this.button(112, 117, 52, 30, "抽取", () => this.drawFromDeck(), "primary");
-    } else {
-      this.text(128, 126, "未开", 11, 0x76698f);
-    }
+    this.text(128, 126, "余量", 11, 0x76698f);
 
     this.text(188, 124, "对手", 12, 0xbba6dc, { fontStyle: "bold" });
     if (opponents.length === 0) {
@@ -537,7 +649,7 @@ export class KingdomScene extends Phaser.Scene {
     return view.players.find((player) => player.id === this.viewedPlayerId) ?? view.self;
   }
 
-  private drawMarket(view: PlayerGameView, canDraw: boolean): void {
+  private drawMarket(view: PlayerGameView): void {
     this.sectionTitle(36, 504, "人才市场");
     CARD_COLORS.forEach((color, index) => {
       const x = 34 + index * 74;
@@ -547,9 +659,6 @@ export class KingdomScene extends Phaser.Scene {
       this.roundRect(x, y, 64, 40, 10, 0x0b0914, 1, TRACK_META[color].color);
       this.text(x + 7, y + 8, topCard ? cardValue(topCard) : "空", 18, topCard ? cardColor(topCard) : 0x76698f, { fontStyle: "bold" });
       this.text(x + 36, y + 12, `${pile.length}`, 12, 0xbba6dc);
-      if (canDraw && topCard) {
-        this.clickZone(x, y, 64, 40, () => this.drawFromMarket(color));
-      }
     });
   }
 
@@ -582,27 +691,50 @@ export class KingdomScene extends Phaser.Scene {
   private drawHand(
     view: PlayerGameView,
     active: boolean,
+    canDraw: boolean,
     selectedCard: Card | undefined,
     selectedPlaceColor: CardColor | undefined,
   ): void {
-    this.panel(16, 626, 398, 282, "手牌");
+    const cardWidth = 78;
+    const cardHeight = 82;
+    const cardGap = 10;
+    const titleSize = 21;
+    const rowStep = cardHeight + cardGap;
+    const panelHeight = cardGap + titleSize + cardGap + cardHeight + cardGap + cardHeight + cardGap;
+    const handY = this.screenHeight - 24 - panelHeight;
+    const titleY = handY + cardGap;
+    const topCardY = titleY + titleSize + cardGap;
+    this.panel(16, handY, 398, panelHeight);
+    this.text(36, titleY, "手牌", titleSize, 0xfff3d0, { fontStyle: "bold" });
+
     const sorted = this.sortHand(view.self.hand);
     sorted.forEach((card, index) => {
       const x = 32 + (index % 4) * 94;
-      const y = 672 + Math.floor(index / 4) * 92;
-      this.drawCard(x, y, 78, 82, card, active, this.selectedCardId === card.id);
+      const y = topCardY + Math.floor(index / 4) * rowStep;
+      this.drawCard(x, y, cardWidth, cardHeight, card, active, this.selectedCardId === card.id);
     });
 
-    if (!active || !selectedCard) return;
-    this.roundRect(32, 878, 366, 42, 14, 0x271218, 0.98, 0xff744a, 2);
-    this.text(48, 890, formatCard(selectedCard), 14, 0xf5f0e8, { fontStyle: "bold" });
+    if (canDraw) {
+      this.drawDrawChoices(view, handY - 96);
+    } else if (active && selectedCard) {
+      this.drawPlayChoices(selectedCard, selectedPlaceColor, handY - 54);
+    }
+  }
+
+  private drawPlayChoices(
+    selectedCard: Card,
+    selectedPlaceColor: CardColor | undefined,
+    actionY: number,
+  ): void {
+    this.roundRect(32, actionY, 366, 48, 14, 0x271218, 0.98, 0xff744a, 2);
+    this.text(48, actionY + 12, formatCard(selectedCard), 14, 0xf5f0e8, { fontStyle: "bold" });
     const trackText = selectedCard.type === "wild"
       ? "任意赛道"
       : `${TRACK_META[selectedCard.color].label}赛道`;
-    this.text(146, 890, trackText, 12, 0xbba6dc);
+    this.text(146, actionY + 12, trackText, 12, 0xbba6dc);
     this.button(
       232,
-      884,
+      actionY + 9,
       78,
       30,
       "赛道",
@@ -614,7 +746,7 @@ export class KingdomScene extends Phaser.Scene {
     );
     this.button(
       316,
-      884,
+      actionY + 9,
       72,
       30,
       "市场",
@@ -622,6 +754,68 @@ export class KingdomScene extends Phaser.Scene {
       "danger",
       !canDiscardSelectedCard(selectedCard),
     );
+  }
+
+  private drawDrawChoices(view: PlayerGameView, actionY: number): void {
+    this.roundRect(16, actionY, 398, 94, 16, 0x101827, 0.98, 0x7be3a4, 2);
+    const options: Array<{
+      key: string;
+      card?: Card;
+      deckCount?: number;
+      onClick: () => void;
+    }> = [];
+
+    if (view.deckCount > 0) {
+      options.push({
+        key: "deck",
+        deckCount: view.deckCount,
+        onClick: () => this.drawFromDeck(),
+      });
+    }
+
+    CARD_COLORS.forEach((color) => {
+      const pile = view.discardPiles[color];
+      const topCard = pile[pile.length - 1];
+      if (!topCard) return;
+      options.push({
+        key: color,
+        card: topCard,
+        onClick: () => this.drawFromMarket(color),
+      });
+    });
+
+    if (options.length === 0) {
+      this.text(48, actionY + 15, "没有可抽取的机会", 14, 0x76698f);
+      return;
+    }
+
+    const cardWidth = 78;
+    const cardHeight = 82;
+    const step = 62;
+    const startX = 24;
+    const cardY = actionY + 6;
+    options.slice(0, 6).forEach((option, index) => {
+      const x = startX + index * step;
+      if (option.card) {
+        this.drawCard(x, cardY, cardWidth, cardHeight, option.card, false, false);
+      } else {
+        this.drawDeckChoiceCard(x, cardY, cardWidth, cardHeight, option.deckCount ?? 0);
+      }
+      this.clickZone(x, cardY, cardWidth, cardHeight, option.onClick);
+    });
+  }
+
+  private drawDeckChoiceCard(
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    deckCount: number,
+  ): void {
+    this.roundRect(x, y, width, height, 12, 0x100d1c, 1, 0xffd166, 2);
+    this.text(x + 8, y + 8, "岗位池", 9, 0xbba6dc);
+    this.text(x + 10, y + 26, "?", 30, 0xffd166, { fontStyle: "bold" });
+    this.text(x + 8, y + 62, `余量 ${deckCount}`, 10, 0xf5f0e8);
   }
 
   private drawCard(
@@ -658,6 +852,7 @@ export class KingdomScene extends Phaser.Scene {
   private createRoom(): void {
     const nickname = this.createNickname.trim() || STORAGE_FALLBACK_NICKNAME;
     if (this.pending) return;
+    this.deactivateInput();
     this.pending = "create";
     this.error = undefined;
     this.render();
@@ -687,6 +882,7 @@ export class KingdomScene extends Phaser.Scene {
     const nickname = this.joinNickname.trim() || STORAGE_FALLBACK_NICKNAME;
     const roomId = this.joinRoomId.trim() as RoomId;
     if (!roomId || this.pending) return;
+    this.deactivateInput();
     this.pending = "join";
     this.error = undefined;
     this.render();
@@ -888,10 +1084,10 @@ export class KingdomScene extends Phaser.Scene {
     this.text(x + 16, y + 12, value || "点击后输入", 16, value ? 0xf5f0e8 : 0x76698f);
     if (this.activeInput === field) {
       this.text(x + width - 24, y + 12, "▌", 16, 0xffd166);
+      this.positionKeyboardProxy(x, y, width, height);
     }
     this.clickZone(x, y, width, height, () => {
-      this.activeInput = field;
-      this.render();
+      this.activateInput(field);
     });
   }
 

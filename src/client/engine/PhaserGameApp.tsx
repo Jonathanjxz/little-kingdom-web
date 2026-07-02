@@ -1,9 +1,8 @@
 import { useEffect, useRef } from "react";
 import Phaser from "phaser";
 import { KingdomScene } from "./KingdomScene";
+import { chooseGameLayout } from "./layout";
 
-const GAME_WIDTH = 430;
-const GAME_HEIGHT = 932;
 const MAX_RENDER_SCALE = 2;
 
 export function PhaserGameApp() {
@@ -15,18 +14,21 @@ export function PhaserGameApp() {
 
     hostRef.current.replaceChildren();
     const renderScale = (window.devicePixelRatio || 1) > 1 ? MAX_RENDER_SCALE : 1;
+    const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
+    const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+    const layout = chooseGameLayout(viewportWidth, viewportHeight);
     gameRef.current = new Phaser.Game({
       type: Phaser.AUTO,
       parent: hostRef.current,
       backgroundColor: "#080b0f",
-      width: GAME_WIDTH * renderScale,
-      height: GAME_HEIGHT * renderScale,
+      width: layout.width * renderScale,
+      height: layout.height * renderScale,
       scale: {
         mode: Phaser.Scale.FIT,
         autoCenter: Phaser.Scale.NO_CENTER,
         autoRound: true,
-        width: GAME_WIDTH * renderScale,
-        height: GAME_HEIGHT * renderScale,
+        width: layout.width * renderScale,
+        height: layout.height * renderScale,
       },
       render: {
         antialias: true,

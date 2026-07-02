@@ -4,7 +4,10 @@ import { io, Socket } from "socket.io-client";
 import type { ClientToServerEvents, ServerToClientEvents } from "../server/socket/protocol";
 
 const isProd = import.meta.env.PROD;
-const devUrl = import.meta.env.VITE_SERVER_URL ?? "http://localhost:3001";
+const defaultDevUrl = window.location.hostname === "lkdm.ustc.su"
+  ? "https://lkdmapi.ustc.su"
+  : "http://localhost:3001";
+const devUrl = import.meta.env.VITE_SERVER_URL ?? defaultDevUrl;
 
 type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 

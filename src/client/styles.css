@@ -19,12 +19,13 @@ body {
 }
 
 .phaser-host {
+  position: fixed;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   width: 100vw;
   height: 100dvh;
-  min-height: 100vh;
   overflow: hidden;
   background: #070b0f;
 }
@@ -32,4 +33,25 @@ body {
 .phaser-host canvas {
   display: block;
   margin: 0 !important;
+}
+
+.kingdom-keyboard-proxy {
+  position: fixed;
+  z-index: 2;
+  display: block;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0 12px;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  opacity: 0.01;
+  pointer-events: none;
+  background: transparent;
+  color: transparent;
+  caret-color: transparent;
+  font: 16px Inter, "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  -webkit-text-fill-color: transparent;
+  appearance: none;
 }
